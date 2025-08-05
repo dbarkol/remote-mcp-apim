@@ -1,0 +1,13 @@
+{
+  "recommendations": [
+    "ms-azuretools.azure-dev",
+    "ms-azuretools.vscode-azurefunctions",
+    "ms-azuretools.vscode-bicep",
+    "ms-python.python",
+    "ms-python.debugpy",
+    "ms-dotnettools.csharp",
+    "ms-dotnettools.vscode-dotnet-runtime",
+    "ms-vscode.vscode-json",
+    "redhat.vscode-yaml"
+  ]
+}

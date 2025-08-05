@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "./src/mcp-server-python/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.autoImportCompletions": true,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/bin": true,
+    "**/obj": true
+  },
+  "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": true,
+  "azureFunctions.deploySubpath": "src/mcp-server-dotnet",
+  "azureFunctions.projectLanguage": "C#",
+  "azureFunctions.projectRuntime": "~4",
+  "debug.internalConsoleOptions": "neverOpen"
+}

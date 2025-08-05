@@ -1,0 +1,17 @@
+name: remote-mcp-apim
+metadata:
+  template: remote-mcp-apim@0.0.1-beta
+services:
+  mcp-server-python:
+    project: src/mcp-server-python
+    host: containerapp
+    language: python
+    docker:
+      path: Dockerfile
+      context: ./
+  mcp-server-dotnet:
+    project: src/mcp-server-dotnet
+    host: function
+    language: dotnet
+infra:
+  provider: bicep
