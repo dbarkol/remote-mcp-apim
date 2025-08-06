@@ -3,6 +3,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.ApplicationInsights.WorkerService;
 using Microsoft.Azure.Functions.Worker.ApplicationInsights;
+using ModelContextProtocol.Server;
+using McpServerDotnet.Tools;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWebApplication()
@@ -10,6 +12,13 @@ var host = new HostBuilder()
     {
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
+        
+        // Add MCP Server services
+        services.AddMcpServer()
+            .WithToolsFromAssembly();
+            
+        // Register our tool classes
+        services.AddSingleton<ServerInfoTools>();
     })
     .Build();
 

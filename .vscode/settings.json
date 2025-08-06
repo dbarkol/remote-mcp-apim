@@ -12,5 +12,6 @@
   "azureFunctions.deploySubpath": "src/mcp-server-dotnet",
   "azureFunctions.projectLanguage": "C#",
   "azureFunctions.projectRuntime": "~4",
-  "debug.internalConsoleOptions": "neverOpen"
+  "debug.internalConsoleOptions": "neverOpen",
+  "azureFunctions.projectSubpath": "src/mcp-server-dotnet"
 }

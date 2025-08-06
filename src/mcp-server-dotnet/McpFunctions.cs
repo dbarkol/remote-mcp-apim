@@ -2,18 +2,22 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using McpServerDotnet.Tools;
+using System.Reflection;
 
 namespace McpServerDotnet;
 
 public class McpFunctions
 {
     private readonly ILogger<McpFunctions> _logger;
+    private readonly ServerInfoTools _serverInfoTools;
 
-    public McpFunctions(ILogger<McpFunctions> logger)
+    public McpFunctions(ILogger<McpFunctions> logger, ServerInfoTools serverInfoTools)
     {
         _logger = logger;
+        _serverInfoTools = serverInfoTools;
     }
 
     [Function("HealthCheck")]
@@ -25,7 +29,10 @@ public class McpFunctions
         {
             status = "healthy",
             service = "MCP Server (.NET)",
-            version = "1.0.0"
+            version = "2.0.0",
+            protocol = "Model Context Protocol",
+            protocolVersion = "2024-11-05",
+            timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         });
     }
 
@@ -37,173 +44,187 @@ public class McpFunctions
 
         try
         {
-            var requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var mcpRequest = JsonSerializer.Deserialize<McpRequest>(requestBody, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            using var reader = new StreamReader(req.Body);
+            var requestBody = await reader.ReadToEndAsync();
+            
+            _logger.LogDebug("MCP request body: {RequestBody}", requestBody);
 
-            if (mcpRequest == null)
+            // Parse the JSON-RPC request
+            var jsonDocument = JsonDocument.Parse(requestBody);
+            var root = jsonDocument.RootElement;
+
+            if (!root.TryGetProperty("method", out var methodElement))
             {
-                return new BadRequestObjectResult("Invalid request");
+                return new BadRequestObjectResult(new
+                {
+                    jsonrpc = "2.0",
+                    error = new { code = -32600, message = "Invalid Request" },
+                    id = root.TryGetProperty("id", out var idElement) ? GetIdValue(idElement) : null
+                });
             }
 
-            var response = mcpRequest.Method switch
+            var method = methodElement.GetString();
+            var id = root.TryGetProperty("id", out var requestIdElement) ? GetIdValue(requestIdElement) : null;
+
+            _logger.LogInformation("Processing MCP method: {Method}", method);
+
+            // Handle the MCP request based on method
+            var response = method switch
             {
-                "initialize" => HandleInitialize(mcpRequest),
-                "tools/list" => HandleToolsList(mcpRequest),
-                "tools/call" => HandleToolsCall(mcpRequest),
-                "resources/list" => HandleResourcesList(mcpRequest),
-                "resources/read" => HandleResourcesRead(mcpRequest),
-                _ => new McpResponse
-                {
-                    Id = mcpRequest.Id,
-                    Error = new McpError
-                    {
-                        Code = -32601,
-                        Message = $"Method not found: {mcpRequest.Method}"
-                    }
-                }
+                "initialize" => HandleInitialize(root, id),
+                "tools/list" => HandleToolsList(root, id),
+                "tools/call" => await HandleToolsCall(root, id),
+                "resources/list" => HandleResourcesList(root, id),
+                "resources/read" => HandleResourcesRead(root, id),
+                _ => CreateErrorResponse(id, -32601, $"Method not found: {method}")
             };
 
             return new OkObjectResult(response);
         }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing error in MCP request");
+            return new BadRequestObjectResult(new
+            {
+                jsonrpc = "2.0",
+                error = new { code = -32700, message = "Parse error" },
+                id = (object?)null
+            });
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling MCP request");
-            return new ObjectResult(new McpResponse
+            return new ObjectResult(new
             {
-                Error = new McpError
-                {
-                    Code = -32603,
-                    Message = $"Internal error: {ex.Message}"
-                }
+                jsonrpc = "2.0",
+                error = new { code = -32603, message = $"Internal error: {ex.Message}" },
+                id = (object?)null
             })
             { StatusCode = 500 };
         }
     }
 
-    private McpResponse HandleInitialize(McpRequest request)
+    private static object? GetIdValue(JsonElement idElement)
     {
-        return new McpResponse
+        return idElement.ValueKind switch
         {
-            Id = request.Id,
-            Result = new Dictionary<string, object>
+            JsonValueKind.String => idElement.GetString(),
+            JsonValueKind.Number => idElement.TryGetInt32(out var intVal) ? intVal : idElement.GetDouble(),
+            JsonValueKind.Null => null,
+            _ => idElement.ToString()
+        };
+    }
+
+    private object HandleInitialize(JsonElement request, object? id)
+    {
+        _logger.LogInformation("Handling initialize request");
+
+        var serverInfo = new Implementation 
+        { 
+            Name = "mcp-server-dotnet", 
+            Version = "2.0.0" 
+        };
+
+        return new
+        {
+            jsonrpc = "2.0",
+            id = id,
+            result = new
             {
-                ["protocolVersion"] = "2024-11-05",
-                ["capabilities"] = new Dictionary<string, object>
+                protocolVersion = "2024-11-05",
+                capabilities = new
                 {
-                    ["tools"] = new Dictionary<string, object> { ["listChanged"] = true },
-                    ["resources"] = new Dictionary<string, object> 
-                    { 
-                        ["subscribe"] = true, 
-                        ["listChanged"] = true 
-                    }
+                    tools = new { listChanged = true },
+                    resources = new { subscribe = true, listChanged = true }
                 },
-                ["serverInfo"] = new Dictionary<string, object>
+                serverInfo = new
                 {
-                    ["name"] = "mcp-server-dotnet",
-                    ["version"] = "1.0.0"
+                    name = serverInfo.Name,
+                    version = serverInfo.Version
                 }
             }
         };
     }
 
-    private McpResponse HandleToolsList(McpRequest request)
+    private object HandleToolsList(JsonElement request, object? id)
     {
-        var tools = new[]
-        {
-            new
-            {
-                name = "get_server_info",
-                description = "Get information about the .NET MCP server",
-                inputSchema = new
-                {
-                    type = "object",
-                    properties = new
-                    {
-                        includeEnvironment = new
-                        {
-                            type = "boolean",
-                            description = "Include environment information",
-                            @default = false
-                        }
-                    }
-                }
-            }
-        };
+        _logger.LogInformation("Handling tools/list request");
 
-        return new McpResponse
+        // Get available tools using reflection on ServerInfoTools
+        var tools = GetAvailableTools();
+
+        return new
         {
-            Id = request.Id,
-            Result = new Dictionary<string, object>
+            jsonrpc = "2.0",
+            id = id,
+            result = new
             {
-                ["tools"] = tools
+                tools = tools.ToArray()
             }
         };
     }
 
-    private McpResponse HandleToolsCall(McpRequest request)
+    private async Task<object> HandleToolsCall(JsonElement request, object? id)
     {
-        var toolName = request.Params?.GetValueOrDefault("name")?.ToString();
-        var arguments = request.Params?.GetValueOrDefault("arguments") as JsonElement?;
+        _logger.LogInformation("Handling tools/call request");
 
-        if (toolName == "get_server_info")
+        try
         {
-            var includeEnvironment = false;
-            if (arguments?.TryGetProperty("includeEnvironment", out var envProp) == true)
+            if (!request.TryGetProperty("params", out var paramsElement))
             {
-                includeEnvironment = envProp.GetBoolean();
+                return CreateErrorResponse(id, -32602, "Missing params");
             }
 
-            var serverInfo = new Dictionary<string, object>
+            if (!paramsElement.TryGetProperty("name", out var nameElement))
             {
-                ["serverName"] = "MCP Server (.NET)",
-                ["version"] = "1.0.0",
-                ["runtime"] = "Azure Functions",
-                ["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            };
-
-            if (includeEnvironment)
-            {
-                serverInfo["environment"] = new Dictionary<string, object>
-                {
-                    ["dotnetVersion"] = Environment.Version.ToString(),
-                    ["osVersion"] = Environment.OSVersion.ToString(),
-                    ["machineName"] = Environment.MachineName
-                };
+                return CreateErrorResponse(id, -32602, "Missing tool name");
             }
 
-            return new McpResponse
+            var toolName = nameElement.GetString();
+            var arguments = new Dictionary<string, object?>();
+
+            if (paramsElement.TryGetProperty("arguments", out var argsElement))
             {
-                Id = request.Id,
-                Result = new Dictionary<string, object>
+                foreach (var property in argsElement.EnumerateObject())
                 {
-                    ["content"] = new[]
+                    arguments[property.Name] = GetJsonElementValue(property.Value);
+                }
+            }
+
+            _logger.LogInformation("Calling tool: {ToolName} with arguments: {Arguments}", 
+                toolName, JsonSerializer.Serialize(arguments));
+
+            // Call the appropriate tool method
+            var result = await CallTool(toolName, arguments);
+
+            return new
+            {
+                jsonrpc = "2.0",
+                id = id,
+                result = new
+                {
+                    content = new[]
                     {
                         new
                         {
                             type = "text",
-                            text = $"Server Information: {JsonSerializer.Serialize(serverInfo)}"
+                            text = result
                         }
                     }
                 }
             };
         }
-
-        return new McpResponse
+        catch (Exception ex)
         {
-            Id = request.Id,
-            Error = new McpError
-            {
-                Code = -32601,
-                Message = $"Unknown tool: {toolName}"
-            }
-        };
+            _logger.LogError(ex, "Error calling tool");
+            return CreateErrorResponse(id, -32603, $"Error calling tool: {ex.Message}");
+        }
     }
 
-    private McpResponse HandleResourcesList(McpRequest request)
+    private object HandleResourcesList(JsonElement request, object? id)
     {
+        _logger.LogInformation("Handling resources/list request");
+
         var resources = new[]
         {
             new
@@ -215,40 +236,50 @@ public class McpFunctions
             }
         };
 
-        return new McpResponse
+        return new
         {
-            Id = request.Id,
-            Result = new Dictionary<string, object>
-            {
-                ["resources"] = resources
-            }
+            jsonrpc = "2.0",
+            id = id,
+            result = new { resources }
         };
     }
 
-    private McpResponse HandleResourcesRead(McpRequest request)
+    private object HandleResourcesRead(JsonElement request, object? id)
     {
-        var uri = request.Params?.GetValueOrDefault("uri")?.ToString();
+        _logger.LogInformation("Handling resources/read request");
+
+        if (!request.TryGetProperty("params", out var paramsElement) ||
+            !paramsElement.TryGetProperty("uri", out var uriElement))
+        {
+            return CreateErrorResponse(id, -32602, "Missing URI parameter");
+        }
+
+        var uri = uriElement.GetString();
 
         if (uri == "dotnet://server-config")
         {
             var config = new
             {
                 serverName = "MCP Server (.NET)",
-                version = "1.0.0",
+                version = "2.0.0",
+                protocol = "Model Context Protocol",
+                protocolVersion = "2024-11-05",
                 capabilities = new[] { "tools", "resources" },
                 configuration = new
                 {
                     runtime = "Azure Functions",
-                    language = ".NET 8.0"
+                    language = ".NET 8.0",
+                    environment = Environment.GetEnvironmentVariable("AZURE_FUNCTIONS_ENVIRONMENT") ?? "Development"
                 }
             };
 
-            return new McpResponse
+            return new
             {
-                Id = request.Id,
-                Result = new Dictionary<string, object>
+                jsonrpc = "2.0",
+                id = id,
+                result = new
                 {
-                    ["contents"] = new[]
+                    contents = new[]
                     {
                         new
                         {
@@ -261,53 +292,101 @@ public class McpFunctions
             };
         }
 
-        return new McpResponse
+        return CreateErrorResponse(id, -32602, $"Resource not found: {uri}");
+    }
+
+    private async Task<string> CallTool(string? toolName, Dictionary<string, object?> arguments)
+    {
+        return toolName switch
         {
-            Id = request.Id,
-            Error = new McpError
-            {
-                Code = -32602,
-                Message = $"Resource not found: {uri}"
-            }
+            "get_server_info" => await _serverInfoTools.GetServerInfo(
+                arguments.GetValueOrDefault("includeEnvironment") as bool? ?? false),
+            "get_server_status" => await _serverInfoTools.GetServerStatus(),
+            "echo" => await _serverInfoTools.Echo(
+                arguments.GetValueOrDefault("message")?.ToString() ?? ""),
+            _ => throw new ArgumentException($"Unknown tool: {toolName}")
         };
     }
-}
 
-public class McpRequest
-{
-    [JsonPropertyName("jsonrpc")]
-    public string JsonRpc { get; set; } = "2.0";
+    private static List<object> GetAvailableTools()
+    {
+        var tools = new List<object>();
 
-    [JsonPropertyName("id")]
-    public object? Id { get; set; }
+        // Define our available tools with proper schemas
+        tools.Add(new
+        {
+            name = "get_server_info",
+            description = "Get information about the .NET MCP server",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    includeEnvironment = new
+                    {
+                        type = "boolean",
+                        description = "Include environment information",
+                        @default = false
+                    }
+                }
+            }
+        });
 
-    [JsonPropertyName("method")]
-    public string Method { get; set; } = string.Empty;
+        tools.Add(new
+        {
+            name = "get_server_status",
+            description = "Get the current status of the server",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new { }
+            }
+        });
 
-    [JsonPropertyName("params")]
-    public Dictionary<string, object>? Params { get; set; }
-}
+        tools.Add(new
+        {
+            name = "echo",
+            description = "Echo a message back to the client",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    message = new
+                    {
+                        type = "string",
+                        description = "The message to echo back"
+                    }
+                },
+                required = new[] { "message" }
+            }
+        });
 
-public class McpResponse
-{
-    [JsonPropertyName("jsonrpc")]
-    public string JsonRpc { get; set; } = "2.0";
+        return tools;
+    }
 
-    [JsonPropertyName("id")]
-    public object? Id { get; set; }
+    private static object GetJsonElementValue(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString()!,
+            JsonValueKind.Number => element.TryGetInt32(out var intVal) ? intVal : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null!,
+            JsonValueKind.Array => element.EnumerateArray().Select(GetJsonElementValue).ToArray(),
+            JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => GetJsonElementValue(p.Value)),
+            _ => element.ToString()
+        };
+    }
 
-    [JsonPropertyName("result")]
-    public Dictionary<string, object>? Result { get; set; }
-
-    [JsonPropertyName("error")]
-    public McpError? Error { get; set; }
-}
-
-public class McpError
-{
-    [JsonPropertyName("code")]
-    public int Code { get; set; }
-
-    [JsonPropertyName("message")]
-    public string Message { get; set; } = string.Empty;
+    private static object CreateErrorResponse(object? id, int code, string message)
+    {
+        return new
+        {
+            jsonrpc = "2.0",
+            id = id,
+            error = new { code, message }
+        };
+    }
 }

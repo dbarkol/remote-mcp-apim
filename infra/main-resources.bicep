@@ -164,10 +164,13 @@ resource mcpPythonServerApp 'Microsoft.App/containerApps@2024-03-01' = {
       ingress: {
         external: true
         targetPort: 8000
+        transport: 'http'
+        allowInsecure: false
         corsPolicy: {
           allowedOrigins: ['*']
           allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
           allowedHeaders: ['*']
+          allowCredentials: false
         }
       }
       registries: [
@@ -195,16 +198,60 @@ resource mcpPythonServerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: applicationInsights.properties.ConnectionString
             }
+            {
+              name: 'PYTHONUNBUFFERED'
+              value: '1'
+            }
+            {
+              name: 'PYTHONDONTWRITEBYTECODE'
+              value: '1'
+            }
           ]
           resources: {
             cpu: json('0.5')
             memory: '1.0Gi'
           }
+          probes: [
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/'
+                port: 8000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/'
+                port: 8000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 15
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            }
+          ]
         }
       ]
       scale: {
-        minReplicas: 0
+        minReplicas: 1
         maxReplicas: 10
+        rules: [
+          {
+            name: 'http-scaling'
+            http: {
+              metadata: {
+                concurrentRequests: '10'
+              }
+            }
+          }
+        ]
       }
     }
   }
@@ -214,6 +261,7 @@ resource mcpPythonServerApp 'Microsoft.App/containerApps@2024-03-01' = {
     storageBlobDataContributorRoleAssignment
     storageQueueDataContributorRoleAssignment
     storageTableDataContributorRoleAssignment
+    monitoringMetricsPublisherRoleAssignment
   ]
 }
 
@@ -349,6 +397,6 @@ resource functionAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerRegistry.properties.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = containerRegistry.name
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = applicationInsights.properties.ConnectionString
-output MCP_PYTHON_SERVER_URL string = 'https://${mcpPythonServerApp.properties.configuration.ingress.fqdn}'
+output MCP_PYTHON_SERVER_URL string = 'https://${mcpPythonServerApp.properties.configuration.ingress.fqdn}/mcp'
 output MCP_DOTNET_SERVER_URL string = 'https://${mcpDotnetServerApp.properties.defaultHostName}'
 output AZURE_API_MANAGEMENT_SERVICE_URL string = 'https://${apiManagement.properties.gatewayUrl}'

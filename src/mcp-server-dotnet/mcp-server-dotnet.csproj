@@ -16,6 +16,8 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="1.2.0" />
     <PackageReference Include="Azure.Identity" Version="1.11.4" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="ModelContextProtocol" Version="0.3.0-preview.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
